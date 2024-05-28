@@ -27,7 +27,7 @@ const videoSchema = new mongoose.Schema(
     },
     duration: {
       type: Number,
-      required: [True, "Video length can't be empty"],
+      required: [true, "Video length can't be empty"],
     },
     views: {
       type: Number,

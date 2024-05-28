@@ -4,6 +4,9 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 import asyncHandler from "../utils/asynHandler.js";
 import jwt from "jsonwebtoken";
 import { uploadOnCloudinary } from "../utils/cloudinary.js";
+import bcrypt from "bcrypt";
+import { Video } from "../model/videos.model.js";
+import mongoose from "mongoose";
 
 const generateAccessTokenAndRefreshToken = async (userId) => {
   try {
@@ -220,10 +223,280 @@ const regenrateAccessToken = asyncHandler(async (req, res) => {
       .json(new ApiResponse(201, {}, "Session extended successfully"));
   } catch (error) {
     throw new ApiError(
-      error?.message || "Something gone wrong in extending session internal server error",
+      error?.message ||
+        "Something gone wrong in extending session internal server error",
       500
     );
   }
 });
 
-export { registerUser, loginUser, logoutUser, regenrateAccessToken };
+const changePassword = asyncHandler(async (req, res) => {
+  const { oldPassword, newPassword, confirmNewPassword } = req.body();
+  if (newPassword !== confirmNewPassword) {
+    throw new ApiError("New password and cofirm password not same", 401);
+  }
+
+  const user = await User.findById(req?.user?._id).select("-refreshToken");
+  if (!user) {
+    throw new ApiError("Please try again later", 500);
+  }
+
+  const isOldPasswordValid = await user.isPasswordCorrect(oldPassword);
+  if (!isOldPasswordValid) {
+    throw new ApiError("Old Password not valid please try again", 401);
+  }
+
+  user.password = newPassword;
+  const updatedUser = await user.save({ validateBeforeSave: false });
+  if (!updatedUser) {
+    throw new ApiError("Password can't be updated Please try after some time");
+  }
+
+  return res
+    .status(200)
+    .json(new ApiResponse(201, {}, "User password updated successfully"));
+});
+
+const getCurrentUser = asyncHandler(async (req, res) => {
+  return res
+    .status(200)
+    .json(new ApiResponse(201, req.user, "Current user fetched successfully"));
+});
+
+const accountDetailsUpdate = asyncHandler(async (req, res) => {
+  const { fullName } = req.body();
+  const user = await User.findByIdAndUpdate(
+    req?.user?._id,
+    {
+      $set: { fullName },
+    },
+    {
+      new: true,
+    }
+  ).select("-password -refreshToken");
+
+  if (!user) {
+    throw new ApiError(
+      "Please try after some time for update account details",
+      500
+    );
+  }
+  req.user = user;
+
+  return res
+    .status(200)
+    .json(new ApiResponse(201, user, "Account details updated successfully"));
+});
+
+const updateAvatar = asyncHandler(async (req, res) => {
+  const avatarLoaclPath = req?.file.path || undefined;
+  if (!avatarLoaclPath) {
+    throw new ApiError("avatar file is missing", 400);
+  }
+
+  const avatarPublicPath = await uploadOnCloudinary(avatarLoaclPath);
+  if (!avatarPublicPath.url) {
+    throw new ApiError("Some issue in uuploading file", 500);
+  }
+  const updatedUser = await User.findByIdAndUpdate(
+    req?.user?._id,
+    {
+      $set: {
+        avatar: avatarPublicPath.url,
+      },
+    },
+    {
+      new: true,
+    }
+  ).select("-password -refreshToken");
+
+  if (!updatedUser) {
+    throw new ApiError(
+      "Somethign went wrong in update photo please try again",
+      500
+    );
+  }
+  req.user = updatedUser;
+  return res
+    .status(200)
+    .json(new ApiResponse(201, req?.user || {}, "Avatar updated successfully"));
+});
+
+const updateCoverImage = asyncHandler(async (req, res) => {
+  const coverImageLoaclPath = req?.file.path || undefined;
+  if (!coverImageLoaclPath) {
+    throw new ApiError("cover image file is missing", 400);
+  }
+
+  const coverImagePublicPath = await uploadOnCloudinary(coverImageLoaclPath);
+  if (!coverImagePublicPath.url) {
+    throw new ApiError(
+      "Some issue in uploading cover image  file on cloudinary",
+      500
+    );
+  }
+  const updatedUser = await User.findByIdAndUpdate(
+    req?.user?._id,
+    {
+      $set: {
+        avatar: coverImagePublicPath.url,
+      },
+    },
+    {
+      new: true,
+    }
+  ).select("-password -refreshToken");
+
+  if (!updatedUser) {
+    throw new ApiError(
+      "Somethign went wrong in update photo in database please try again",
+      500
+    );
+  }
+  req.user = updatedUser;
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(201, req?.user || {}, "cover image updated successfully")
+    );
+});
+
+const getUserProfile = asyncHandler(async (req, res) => {
+  const { userName } = req.params;
+  if (!userName?.trim()) {
+    throw new ApiError("username not in params", 400);
+  }
+
+  const channel = await User.aggregate(
+    {
+      $match: {
+        userName: userName?.toLowerCase(),
+      },
+    },
+    {
+      // subscription model mai kitne baar ye channel aaya hai utne hi subscriber honge
+      // aur iska naam kitne baar subscriber mai hai utno ko isne subscribe kar rkha hai
+      $lookup: {
+        from: "subscriptions",
+        localField: "_id",
+        foreignField: "channel",
+        as: "subscribers",
+      },
+    },
+    {
+      $lookup: {
+        from: "subscriptions",
+        localField: "_id",
+        foreignField: "subscriber",
+        as: "subscribersTo",
+      },
+    },
+    {
+      $addFields: {
+        subscriberCount: {
+          $size: "$subscibers",
+        },
+        subscribeToCount: {
+          $size: "$subscribersTo",
+        },
+        isSubscriberOrNot: {
+          $condition: {
+            if: { $in: [req?.user?._id, "$subscribers.subscriber"] },
+            then: true,
+            else: fallse,
+          },
+        },
+      },
+    },
+    {
+      $project: {
+        userName: 1,
+        fullName: 1,
+        avatar: 1,
+        coverImage: 1,
+        subscriberCount: 1,
+        subscribeToCount: 1,
+        isSubscriberOrNot: 1,
+        email: 1,
+      },
+    }
+  );
+  // used to do console channell what type of value it returns
+
+ if(!channel?.length){
+    throw new ApiError("channel doesn't exisit",404);
+ }
+
+ return res.status(200)
+            .json(new ApiResponse(201,channel?.[0],"user profile fetched successfully"));
+
+});
+
+const getWatchHistory=asyncHandler(async(req,res)=>{
+   
+    const user=await User.aggregate([
+        {
+        $match:{
+            _id:new mongoose.Types.ObjectId(req.user?._id)
+        }
+    },{
+        $lookup:{
+            from:"videos",
+            localField:"watchHistory",
+            foreignField:"_id",
+            as:"watchHistory",
+            pipeline:[
+                {
+                    $lookup:{
+                        from:"users",
+                        localField:"owner",
+                        foreignField:"_id",
+                        as:"owner",
+                        pipeline:[
+                            {
+                                $project:{
+                                    fullName:1,
+                                    avatar:1,
+                                    userName:1
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    $addFields:{
+                        owner:{
+                            $first:"$owner"
+                        }
+                        
+                    }
+                }
+            ]
+        }
+    }
+
+])
+
+
+if(!user){
+    throw new ApiError("watch history can't be fetch",500);
+}
+
+return res.status(200)
+           .json(new ApiResponse(201,user[0].watchHistory,"watch history fetched successfully"));
+
+})
+
+export {
+  registerUser,
+  loginUser,
+  logoutUser,
+  regenrateAccessToken,
+  changePassword,
+  getCurrentUser,
+  accountDetailsUpdate,
+  updateCoverImage,
+  updateAvatar,
+  getUserProfile,
+  getWatchHistory
+};
