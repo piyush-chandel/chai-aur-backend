@@ -1,7 +1,7 @@
 // In this we use Promise and then
 
 const asyncHandler = (func) => {
-  (req, res, next) => {
+  return (req, res, next) => {
     Promise.resolve(func(req, res, next)).catch((err) => {
       res.status(err.code || 500).json({
         success: false,
